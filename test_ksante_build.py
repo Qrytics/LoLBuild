@@ -4,7 +4,23 @@ Run with: python -m pytest test_ksante_build.py -v
 """
 
 import pytest
-from ksante_build import analyze_composition, _normalize
+from ksante_build import (
+    analyze_composition,
+    detect_lane_opponent,
+    get_build_order,
+    _normalize,
+    is_ap,
+    is_ranged,
+    is_crit,
+    is_dot,
+    is_burst_ap,
+    is_sustained_ap,
+    is_aa_heavy,
+    is_true_damage,
+    is_ap_assassin,
+    is_ad_assassin,
+    is_carry,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -196,7 +212,7 @@ class TestFimbulwinter:
 
     def test_not_recommended_without_true_damage(self):
         # None of these champions have notable true-damage in their kits
-        enemies = ["Darius", "Malphite", "Vi", "Jinx", "Brand"]
+        enemies = ["Sett", "Malphite", "Vi", "Jinx", "Brand"]
         recs = analyze_composition(enemies, [])
         rec = get_rec(recs, "Fimbulwinter")
         assert rec["recommended"] is False
@@ -279,6 +295,16 @@ class TestBuildOrder:
         recommended_names = [_normalize(r["item"]) for r in recs if r["recommended"]]
         assert _normalize("Protoplasm Harness") in recommended_names
 
+    def test_lane_priority_can_override_tier_order(self):
+        recs = analyze_composition(
+            ["Vayne", "Lux", "Syndra", "Vi", "Jarvan IV"],
+            [],
+            lane_opponent="Vayne",
+        )
+        build_order = get_build_order(recs)
+        assert build_order[0]["item"] == "Frozen Heart"
+        assert build_order[0]["lane_priority"] >= 3
+
 
 # ---------------------------------------------------------------------------
 # Normalisation tests
@@ -293,3 +319,111 @@ class TestNormalize:
 
     def test_lowercase(self):
         assert _normalize("GAREN") == "garen"
+
+
+# ---------------------------------------------------------------------------
+# Champion knowledge base regression tests
+# ---------------------------------------------------------------------------
+
+class TestChampionKnowledgeBase:
+    def test_aurora_is_ap_and_ranged(self):
+        assert is_ap("Aurora") is True
+        assert is_ranged("Aurora") is True
+
+    def test_smolder_is_crit_aa_and_carry(self):
+        assert is_crit("Smolder") is True
+        assert is_aa_heavy("Smolder") is True
+        assert is_carry("Smolder") is True
+
+    def test_lillia_is_dot(self):
+        assert is_dot("Lillia") is True
+
+    def test_burst_vs_sustained_ap_classification(self):
+        assert is_burst_ap("Syndra") is True
+        assert is_sustained_ap("Syndra") is False
+        assert is_sustained_ap("Cassiopeia") is True
+
+    def test_gwen_and_darius_are_true_damage(self):
+        assert is_true_damage("Gwen") is True
+        assert is_true_damage("Darius") is True
+
+    def test_belveth_name_variants_are_aa_heavy(self):
+        assert is_aa_heavy("Bel'Veth") is True
+        assert is_aa_heavy("Belveth") is True
+
+    def test_assassin_classification(self):
+        assert is_ap_assassin("LeBlanc") is True
+        assert is_ad_assassin("Zed") is True
+
+
+class TestKnowledgeImpactOnRecommendations:
+    def test_aurora_counts_toward_heavy_ap_for_kaenic(self):
+        enemies = ["Aurora", "Syndra", "Garen", "Vi", "Jinx"]
+        recs = analyze_composition(enemies, [])
+        rec = get_rec(recs, "Kaenic Rookern")
+        assert rec["recommended"] is True
+
+    def test_smolder_counts_toward_randuins(self):
+        enemies = ["Smolder", "Garen", "Vi", "Brand", "Syndra"]
+        recs = analyze_composition(enemies, [])
+        rec = get_rec(recs, "Randuin's Omen")
+        assert rec["recommended"] is True
+
+    def test_deadmans_recommended_vs_assassin_heavy(self):
+        enemies = ["Zed", "Talon", "Garen", "Jinx", "Lux"]
+        recs = analyze_composition(enemies, [])
+        rec = get_rec(recs, "Dead Man's Plate")
+        assert rec["recommended"] is True
+
+    def test_kaenic_recommended_vs_burst_ap_profile(self):
+        enemies = ["Syndra", "LeBlanc", "Garen", "Vi", "Jinx"]
+        recs = analyze_composition(enemies, [])
+        rec = get_rec(recs, "Kaenic Rookern")
+        assert rec["recommended"] is True
+
+    def test_locket_recommended_with_carry_vs_burst(self):
+        enemies = ["Syndra", "LeBlanc", "Garen", "Vi", "Jinx"]
+        allies = ["Jinx", "Amumu", "Nasus", "Lulu"]
+        recs = analyze_composition(enemies, allies)
+        rec = get_rec(recs, "Locket of the Iron Solari")
+        assert rec["recommended"] is True
+
+    def test_anathemas_recommended_vs_assassins(self):
+        enemies = ["Zed", "Kha'Zix", "Garen", "Jinx", "Lux"]
+        recs = analyze_composition(enemies, [])
+        rec = get_rec(recs, "Anathema's Chains")
+        assert rec["recommended"] is True
+
+    def test_kaenic_lane_priority_vs_ap_lane(self):
+        enemies = ["Garen", "Vi", "Jinx", "Sett", "Draven"]
+        recs = analyze_composition(enemies, [], lane_opponent="Akali")
+        rec = get_rec(recs, "Kaenic Rookern")
+        assert rec["recommended"] is True
+        assert rec["lane_priority"] >= 3
+
+    def test_fimbulwinter_lane_priority_vs_true_damage_lane(self):
+        enemies = ["Lux", "Jinx", "Vi", "Amumu", "Leona"]
+        recs = analyze_composition(enemies, [], lane_opponent="Fiora")
+        rec = get_rec(recs, "Fimbulwinter")
+        assert rec["recommended"] is True
+        assert rec["lane_priority"] >= 2
+
+
+class TestLaneOpponentDetection:
+    def test_detects_enemy_top_from_position(self):
+        all_players = [
+            {"team": "ORDER", "championName": "K'Sante", "position": "TOP"},
+            {"team": "CHAOS", "championName": "Teemo", "position": "TOP"},
+            {"team": "CHAOS", "championName": "Vi", "position": "JUNGLE"},
+        ]
+        lane = detect_lane_opponent(all_players, "CHAOS")
+        assert lane == "Teemo"
+
+    def test_fallback_detects_top_pool_champion(self):
+        all_players = [
+            {"team": "CHAOS", "championName": "Jinx", "position": ""},
+            {"team": "CHAOS", "championName": "Darius", "position": ""},
+            {"team": "CHAOS", "championName": "Vi", "position": ""},
+        ]
+        lane = detect_lane_opponent(all_players, "CHAOS")
+        assert lane == "Darius"
